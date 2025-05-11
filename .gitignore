@@ -1,0 +1,7 @@
+logs
+terrain
+UAVClient/__pychace__
+UAVClient/venv
+UAVClient/eeprom.bin
+UAVClient/mav*
+eeprom.bin
