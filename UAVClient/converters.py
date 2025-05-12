@@ -1,4 +1,4 @@
-from dronekit import LocationGlobalRelative, Command, Vehicle
+from dronekit import LocationGlobalRelative, Command, Vehicle, LocationGlobal
 from pymavlink import mavutil
 
 
@@ -32,15 +32,67 @@ class MissionStatusConverter:
             "code": status.value
         }
 
+    
+    
+
 class MissionConverter:
     @staticmethod
     def from_json(mission_json):
         commands = []
-        for wp in mission_json['waypoints']:
+        takeoff_cmd = Command(
+            0, 0, 0, mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0, 0,
+            0, 0, 0, 0,
+            0, 0, 0
+        )
+        commands.append(takeoff_cmd)
+
+        for i, wp in enumerate(mission_json['waypoints']):
             cmd = Command(
                 0, 0, 0, mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 0, 0, 0, 0, 0,
                 wp['lat'], wp['lon'], wp['alt']
             )
             commands.append(cmd)
-        return commands
+        
+        rtl_cmd = Command(
+            0, 0, 0, mavutil.mavlink.MAV_FRAME_MISSION,
+            mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH,
+            0, 0, 0, 0, 0, 0, 0, 0, 0
+        )
+        commands.append(rtl_cmd)
+
+        return commands, mission_json['pickup_mission_index'], mission_json['dropoff_mission_index']
+    
+    @staticmethod
+    def to_json(commands: Command, pickup_mission_index: int, dropoff_mission_index: int): 
+        commands_arr = []
+        for cmd in commands: 
+            #only use nav_wapoints
+            if cmd.command == 16: 
+                commands_arr.append({'lat': cmd.x, 'lon': cmd.y, 'alt': cmd.z})
+        
+        mission_json = {
+            "commands": commands_arr,
+            "pickup_index": pickup_mission_index, 
+            "dropoff_index": dropoff_mission_index
+        }
+        return mission_json
+
+class LandingZoneConverter:
+    @staticmethod
+    def to_json(location: LocationGlobal, id: int):
+        return {
+            "lat": location.lat,
+            "lon": location.lon,
+            "alt": location.alt,
+        }
+    
+    @staticmethod
+    def from_json(data) -> LocationGlobal:
+        return LocationGlobal(data['lat'], data['lon'], data['alt'])
+
+
+
+

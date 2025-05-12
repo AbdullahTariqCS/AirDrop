@@ -18,6 +18,7 @@ class MissionStatus(Enum):
     IN_COMMAND_OVERRIDE = 4
 
 
+
 class UAV:
     def __init__(self, connection_string: str, sys_id: int, app_url: str, port=5000, telemetry_fps = 2):
         self.vehicle = connect(connection_string, wait_ready=True)
@@ -30,6 +31,8 @@ class UAV:
         self.script_msg = ""
         self.mav_msg = None
         self.telemetry_fps = telemetry_fps
+        self.pickup_mission_index = -1
+        self.dropoff_mission_index = -1
         
         # Initialize Flask server with dynamic port
         self.flask_app = Flask(__name__)
@@ -82,7 +85,7 @@ class UAV:
         def get_telemetry(uav_id):
             if uav_id != self.sys_id:
                 return jsonify({"error": "Unauthorized access"}), 403
-                
+             
             return jsonify({
                 "uav_id": self.sys_id,
                 "location": self.get_location(),
@@ -104,10 +107,14 @@ class UAV:
             
             try:
                 if command == 'manual_override':
-                    self.manual_override()
-                    response["status"] = "Manual override activated"
+                    success = self.manual_override()
+                    if success:  
+                        response["status"] = "Manual override activated"
+                    else: 
+                        return jsonify({"error": "Unauthorized command"}), 403
+                        
                 
-                elif command == 'fly_to_landing_zones':
+                elif command == 'fly_to_landing_zone':
                     self.fly_to_landing_zones()
                     response["status"] = "Flying to landing zone"
 
@@ -126,6 +133,14 @@ class UAV:
                 
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
+            
+        @self.flask_app.route('/mission/<int:uav_id>', methods=['GET'])
+        def get_mission(uav_id):
+            if uav_id != self.sys_id:
+                return jsonify({"error": "Unauthorized command"}), 403
+            return jsonify(self.get_mission())
+
+
 
     def run_server(self):
         self._flask_server = make_server('0.0.0.0', self.port, self.flask_app)
@@ -155,10 +170,19 @@ class UAV:
             "uav_id": self.sys_id,
             "endpoint": f"http://{self.get_ip()}:{self.port}"
         }
+
+
         try:
             response = requests.post(f"{self.app_url}/register", json=registration_data)
             response.raise_for_status()
+            response_data = response.json()
+            self.landing_zones = [
+                LandingZoneConverter.from_json(lz_data) 
+                for lz_data in response_data.get("landing_zones", [])
+            ]
+            print(self.landing_zones)
             self.set_script_msg("Registration successful")
+            
         except requests.exceptions.RequestException as e:
             self.set_script_msg(f"Registration failed: {str(e)}")
 
@@ -216,7 +240,10 @@ class UAV:
         return MissionStatusConverter.to_json(self.mission_status)
 
     def manual_override(self):
+        if self.vehicle.channels <= 1300: 
+            return False
         self.vehicle.mode = VehicleMode("LOITER")
+        return True
 
     def fly_to_landing_zones(self):
         try:
@@ -247,11 +274,19 @@ class UAV:
         dlon = target_location.lon - current.lon
         return math.sqrt((dlat**2 + dlon**2)) * 1.113195e5
 
+    def get_mission(self): 
+        cmds = self.vehicle.commands
+        cmds.download()
+        cmds.wait_ready()
+        return MissionConverter().to_json(cmds, self.pickup_mission_index, self.dropoff_mission_index)
+
+
     def upload_mission(self, mission_json):
-        commands = MissionConverter.from_json(mission_json)
+        cmds_arr, self.pickup_mission_index, self.dropoff_mission_index = MissionConverter.from_json(mission_json)
         cmds = self.vehicle.commands
         cmds.clear()
-        for cmd in commands:
+        time.sleep(1)
+        for cmd in cmds_arr:
             cmds.add(cmd)
         cmds.upload()
 
@@ -266,6 +301,38 @@ class UAV:
             0, 0, mavutil.mavlink.MAV_CMD_MISSION_START, 0, 0, 0, 1, 0, 0, 0, 0)
         self.vehicle.send_mavlink(msg)
         self.vehicle.flush()
+
+        def _execute_mission(): 
+            while True: 
+                if self.vehicle.commands.next in [self.pickup_mission_index, self.dropoff_mission_index]: 
+                    self.vehicle.mode = VehicleMode("GUIDED")
+                    time.sleep(1)
+                    self.vehicle.groundspeed = 0
+                    time.sleep(1)
+                    #open servo to lower the payload containers
+                    self.set_servo(5, 2000)
+                    time_start = time.time()
+                    #wait for 10 seconds
+                    while time.time() - time_start >= 20: 
+                        #for override commands
+                        if self.vehicle.mode != "GUIDED": return
+                        time.sleep(1)
+                    
+                    self.set_servo(5, 1000)
+                    time_start = time.time()
+                    #wait for 10 seconds
+                    while time.time() - time_start >= 20: 
+                        #for override commands
+                        if self.vehicle.mode != "GUIDED": return
+                        time.sleep(1)
+                    #continues mission
+                    break
+                    
+                time.sleep(1)
+             
+        threading.Thread(target=_execute_mission, daemon=True).start()
+
+
 
     def check_flight_readiness(self):
         # severity, _ = self.get_mav_msg()
@@ -309,6 +376,27 @@ class UAV:
         except Exception as e:
             print(f"Error getting messages: {e}")
             return -1, f"Error: {str(e)}"
+    
+    def set_servo(self, servo_number: int, pwm_value: int):
+        """
+        Sends a MAV_CMD_DO_SET_SERVO command to control a servo output.
+
+        :param vehicle: Connected DroneKit Vehicle object
+        :param servo_number: Servo output number (e.g., 9 for SERVO9)
+        :param pwm_value: PWM value to set (usually between 1000 and 2000)
+        """
+        msg = self.vehicle.message_factory.command_long_encode(
+            0, 0,    # target_system, target_component
+            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+            0,       # confirmation
+            servo_number,  # param1: servo number
+            pwm_value,     # param2: PWM value
+            0, 0, 0, 0, 0   # unused parameters
+        )
+
+        self.vehicle.send_mavlink(msg)
+        self.vehicle.flush()
+        print(f"Set SERVO {servo_number} to PWM {pwm_value}")
 
 
 #----Example Usage-----

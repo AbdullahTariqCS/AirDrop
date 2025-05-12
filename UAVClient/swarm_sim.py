@@ -2,7 +2,7 @@ import subprocess
 import os
 import time
 from typing import List, Tuple
-from UAVClient.UAV import UAV
+from UAV import UAV
 from pymavlink import mavutil
 import socket
 from test_dronekit import fly_simple_mission

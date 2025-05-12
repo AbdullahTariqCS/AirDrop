@@ -12,8 +12,8 @@ class CentralControlApplication:
         self.logs = defaultdict(list)
         self.telemetry = defaultdict(dict)
         self.landing_zones = [
-            {"id": 1, "lat": 37.7749, "lon": -122.4194, "alt": 10.0},
-            {"id": 2, "lat": 37.3382, "lon": -121.8863, "alt": 15.0}
+            {"id": 1, "lat": 34.07020443923026, "lon": 72.64274724646779, "alt": 340},
+            {"id": 2, "lat": 34.070754654891495, "lon": 72.64319147781445, "alt": 340}
         ]
         
         self.setup_routes()
@@ -64,7 +64,7 @@ class CentralControlApplication:
                                         <h3>Commands</h3>
                                         <button onclick="sendCommand(${uavId}, 'start_mission')">Start Mission</button>
                                         <button onclick="sendCommand(${uavId}, 'manual_override')">Manual Override</button>
-                                        <button onclick="sendCommand(${uavId}, 'fly_to_landing_zones')">Go to Landing Zone</button>
+                                        <button onclick="sendCommand(${uavId}, 'fly_to_landing_zone')">Go to Landing Zone</button>
                                     </div>
                                     <div class="logs">
                                         <h3>Logs</h3>
@@ -110,14 +110,6 @@ class CentralControlApplication:
                     }))
             return Response(event_stream(), mimetype="text/event-stream")
 
-        @self.app.route('/register', methods=['POST'])
-        def register_uav():
-            data = request.json
-            uav_id = data['uav_id']
-            self.registered_uavs[uav_id] = data['endpoint']
-            self.telemetry[uav_id] = {}
-            return jsonify({"status": "registered"})
-
         @self.app.route('/log', methods=['POST'])
         def receive_log():
             data = request.json
@@ -142,6 +134,19 @@ class CentralControlApplication:
                 return jsonify(response.json())
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
+
+        @self.app.route('/register', methods=['POST'])
+        def register_uav():
+            data = request.json
+            uav_id = data['uav_id']
+            self.registered_uavs[uav_id] = data['endpoint']
+            self.telemetry[uav_id] = {}
+            
+            
+            return jsonify({
+                "status": "registered",
+                "landing_zones": self.landing_zones  # Include converted data
+            })
 
     def run(self, port=8000):
         self.app.run(port=port, debug=False, threaded=True)
