@@ -53,8 +53,7 @@ class ArduCopter:
     def attach_script(self): 
         # print(self.dronekit_connection_string)
         # Thread(target=fly_simple_mission, args=(self.dronekit_connection_string, self.sys_id)).start()
-        self.dronekit_script = UAV(self.dronekit_connection_string, self.sys_id, "http://127.0.0.1:8000", 5000 + self.sys_id - 1)
-        
+        self.dronekit_script = UAV(self.dronekit_connection_string, self.sys_id, "http://172.20.10.3:3000", 5000 + self.sys_id - 1)
 
 
     def kill_instance(self): 
@@ -69,8 +68,8 @@ class Sim:
         self.copters: List[ArduCopter] = [
             ArduCopter(34.070338, 72.642536, 344.1282212, 0, 1, 5760),
             ArduCopter(34.070303, 72.642508, 344.0000000, 0, 2, 5770),
-            # ArduCopter(34.06910982932786, 72.64367631675118, 344.0000000, 0, 3, 5780),
-            # ArduCopter(34.06908983275423, 72.64377824069282, 344.0000000, 0, 4, 5790)
+            ArduCopter(34.06910982932786, 72.64367631675118, 344.0000000, 0, 3, 5780),
+            ArduCopter(34.06908983275423, 72.64377824069282, 344.0000000, 0, 4, 5790)
         ]
         self.num_copters = len(self.copters)
         self.swarm_connection_string = swarm_connection_string

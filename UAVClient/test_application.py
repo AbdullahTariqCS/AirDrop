@@ -12,8 +12,8 @@ class CentralControlApplication:
         self.logs = defaultdict(list)
         self.telemetry = defaultdict(dict)
         self.landing_zones = [
-            {"id": 1, "lat": 34.07020443923026, "lon": 72.64274724646779, "alt": 340},
-            {"id": 2, "lat": 34.070754654891495, "lon": 72.64319147781445, "alt": 340}
+            {"lat": 34.07020443923026, "lon": 72.64274724646779, "alt": 340},
+            {"lat": 34.070754654891495, "lon": 72.64319147781445, "alt": 340}
         ]
         
         self.setup_routes()
@@ -65,12 +65,9 @@ class CentralControlApplication:
                                         <button onclick="sendCommand(${uavId}, 'start_mission')">Start Mission</button>
                                         <button onclick="sendCommand(${uavId}, 'manual_override')">Manual Override</button>
                                         <button onclick="sendCommand(${uavId}, 'fly_to_landing_zone')">Go to Landing Zone</button>
+                                        <button onclick="sendCommand(${uavId}, 'continue_mission')">Continue Mission</button>
                                     </div>
-                                    <div class="logs">
-                                        <h3>Logs</h3>
-                                        <div class="log-box" id="logs-${uavId}"></div>
-                                    </div>
-                                </div>
+                              </div>
                             `).join('');
                         }
 
@@ -149,7 +146,7 @@ class CentralControlApplication:
             })
 
     def run(self, port=8000):
-        self.app.run(port=port, debug=False, threaded=True)
+        self.app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 def run_control_center():
     # Start central application

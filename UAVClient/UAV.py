@@ -18,21 +18,22 @@ class MissionStatus(Enum):
     IN_COMMAND_OVERRIDE = 4
 
 
-
 class UAV:
-    def __init__(self, connection_string: str, sys_id: int, app_url: str, port=5000, telemetry_fps = 2):
+    def __init__(self, connection_string: str, sys_id: int, app_url: str, port=5000, telemetry_fps = 1):
         self.vehicle = connect(connection_string, wait_ready=True)
         self.mission_status = MissionStatus.NOT_READY
         self.next_wp = None
         self.command_override = False
+        self.going_to_landing_zone = False
         self.app_url = app_url
         self.sys_id = sys_id
         self.port = port
         self.script_msg = ""
         self.mav_msg = None
         self.telemetry_fps = telemetry_fps
-        self.pickup_mission_index = -1
-        self.dropoff_mission_index = -1
+        self.pickup_mission_index = 0
+        self.dropoff_mission_index = 2
+        
         
         # Initialize Flask server with dynamic port
         self.flask_app = Flask(__name__)
@@ -70,7 +71,7 @@ class UAV:
                 }
                 # Send POST request to central app's telemetry endpoint
                 response = requests.post(
-                    f"{self.app_url}/telemetry/{self.sys_id}",
+                    f"{self.app_url}/drone/telemetry/{self.sys_id}",
                     json=telemetry_data
                 )
                 response.raise_for_status()
@@ -86,13 +87,18 @@ class UAV:
             if uav_id != self.sys_id:
                 return jsonify({"error": "Unauthorized access"}), 403
              
-            return jsonify({
+            mav_msg = self.mav_msg
+
+            telemetry_data = {
                 "uav_id": self.sys_id,
                 "location": self.get_location(),
                 "attitude": self.get_attitude(),
                 "mission_status": self.get_mission_status(),
-                "message": self.script_msg
-            })
+                "script_message": self.script_msg,
+                "mav_message": mav_msg 
+            }
+
+            return jsonify(telemetry_data)
 
         @self.flask_app.route('/command/<int:uav_id>', methods=['POST'])
         def handle_command(uav_id):
@@ -104,7 +110,8 @@ class UAV:
             params = data.get('params', {})
             
             response = {"uav_id": self.sys_id}
-            
+
+            print(command, params)            
             try:
                 if command == 'manual_override':
                     success = self.manual_override()
@@ -115,7 +122,7 @@ class UAV:
                         
                 
                 elif command == 'fly_to_landing_zone':
-                    self.fly_to_landing_zones()
+                    self.fly_to_landing_zone()
                     response["status"] = "Flying to landing zone"
 
                 elif command == 'upload_mission':
@@ -125,6 +132,10 @@ class UAV:
                 elif command == 'start_mission':
                     self.start_mission()
                     response["status"] = "Mission started"
+                
+                elif command == 'continue_mission': 
+                    self.start_mission(True)
+                    response["status"] = "Mission Continue"
                 else:
                     response["error"] = "Unknown command"
                     return jsonify(response), 400
@@ -138,13 +149,19 @@ class UAV:
         def get_mission(uav_id):
             if uav_id != self.sys_id:
                 return jsonify({"error": "Unauthorized command"}), 403
-            return jsonify(self.get_mission())
+            mission = self.get_mission()
+            if not len(mission['commands']): 
+                return jsonify({"error": "Mission is empty"}), 403
+            
+            return jsonify(mission)
 
+    
 
 
     def run_server(self):
         self._flask_server = make_server('0.0.0.0', self.port, self.flask_app)
         self._flask_server.serve_forever()
+        self.vehicle.channels.overridess
 
     def cleanup(self):
         """Clean up resources including Flask server and vehicle connection."""
@@ -173,7 +190,8 @@ class UAV:
 
 
         try:
-            response = requests.post(f"{self.app_url}/register", json=registration_data)
+            # response = requests.post(f"{self.app_url}/register", json=registration_data)
+            response = requests.post(f"{self.app_url}/drone/register", json=registration_data)
             response.raise_for_status()
             response_data = response.json()
             self.landing_zones = [
@@ -201,7 +219,7 @@ class UAV:
     def set_script_msg(self, msg, console = True):
         self.script_msg = msg
         if console: 
-            print(msg)
+            print(self.sys_id, ':', msg)
         # try:
         #     requests.post(f"{self.app_url}/log", json={"uav_id": self.sys_id, "message": msg})
         # except Exception as e:
@@ -225,7 +243,7 @@ class UAV:
             self.mission_status = MissionStatus.READY_FOR_MISSION
             self.set_script_msg("Ready for mission", False)
 
-        elif self.check_in_mission():
+        elif self.check_in_mission() and not self.check_manual_override():
             self.mission_status = MissionStatus.IN_MISSION
             self.set_script_msg("In mission", False)
 
@@ -240,31 +258,57 @@ class UAV:
         return MissionStatusConverter.to_json(self.mission_status)
 
     def manual_override(self):
-        if self.vehicle.channels <= 1300: 
-            return False
+        # if self.vehicle.channels <= 1300: 
+        #     return False
+        self.vehicle.commands.download()
+        self.vehicle.commands.wait_ready()
+        self.next_wp = self.vehicle.commands.next
         self.vehicle.mode = VehicleMode("LOITER")
         return True
 
-    def fly_to_landing_zones(self):
+    def fly_to_landing_zone(self):
+        if not self.landing_zones:
+            self.set_script_msg("No landing zones available")
+            return
+        
+        if not self.vehicle.armed: 
+            self.set_script_msg("Cannot land an already landed copter")
+            return
+        
+        if self.going_to_landing_zone: 
+            self.set_script_msg("Already Going to landing zone")
+            return
+
         try:
-            response = requests.get(f"{self.app_url}/landing_zones/nearest", params={"uav_id": self.sys_id})
-            if response.status_code == 200:
-                location_data = response.json()
-                location = LocationConverter.from_json(location_data)
-                self.command_override = True
-                self.vehicle.mode = VehicleMode("GUIDED")
-                time.sleep(1)
-                self.vehicle.simple_goto(location)
-                while self.get_distance_metres(location) > 2:
-                    self.set_script_msg("En route to landing zone")
-                    time.sleep(2)
+            # Find the nearest landing zone (already LocationGlobal objects)
+            nearest_lz = min(
+                self.landing_zones,
+                key=lambda lz: self.get_distance_metres(lz)
+            )
+
+            self.command_override = True
+            self.vehicle.mode = VehicleMode("GUIDED")
+            time.sleep(1)
+            self.vehicle.simple_goto(LocationGlobalRelative(nearest_lz.lat, nearest_lz.lon, self.vehicle.location.global_relative_frame.alt))
+            def _going_to_landing_zone(): 
+                while self.get_distance_metres(nearest_lz) > 2:
+                    self.set_script_msg(
+                        f"En route to nearest landing zone (Distance: {self.get_distance_metres(nearest_lz):.2f}m)"
+                    )
+                    time.sleep(1)
+                    if self.vehicle.mode != "GUIDED": return
+
                 self.next_wp = self.vehicle.commands.next
                 self.vehicle.mode = VehicleMode("LAND")
+
                 while self.vehicle.armed:
                     self.set_script_msg("Landing...")
-                    time.sleep(2)
-            else:
-                self.set_script_msg("Failed to fetch landing zone")
+                    if self.vehicle.mode != "LAND": return
+                    time.sleep(1)
+
+            threading.Thread(target=_going_to_landing_zone, daemon=True).start()
+
+
         except Exception as e:
             self.set_script_msg(f"Error: {str(e)}")
 
@@ -282,65 +326,90 @@ class UAV:
 
 
     def upload_mission(self, mission_json):
+        # print(mission_json)
         cmds_arr, self.pickup_mission_index, self.dropoff_mission_index = MissionConverter.from_json(mission_json)
         cmds = self.vehicle.commands
         cmds.clear()
         time.sleep(1)
         for cmd in cmds_arr:
             cmds.add(cmd)
+            time.sleep(0.5)
         cmds.upload()
+        time.sleep(2)
 
-    def start_mission(self):
+    def start_mission(self, continue_mission=False):
+        if self.mission_status == MissionStatus.IN_MISSION: 
+            self.set_script_msg("Already in Mission")
+
         self.command_override = False
-        self.vehicle.mode = VehicleMode("GUIDED")
-        time.sleep(1)
-        self.vehicle.armed = True
-        time.sleep(1)
-        self.vehicle.mode = VehicleMode("AUTO")
-        msg = self.vehicle.message_factory.command_long_encode(
-            0, 0, mavutil.mavlink.MAV_CMD_MISSION_START, 0, 0, 0, 1, 0, 0, 0, 0)
-        self.vehicle.send_mavlink(msg)
-        self.vehicle.flush()
+        if not self.vehicle.armed: 
+            self.vehicle.mode = VehicleMode("GUIDED")
+            time.sleep(1)
+            self.vehicle.armed = True
+            time.sleep(1)
+            self.vehicle.simple_takeoff(40)
+            time.sleep(30)
+            # msg = self.vehicle.message_factory.command_long_encode(
+            #     0, 0, mavutil.mavlink.MAV_CMD_MISSION_START, 0, 0, 0, 1, 0, 0, 0, 0)
+            # self.vehicle.send_mavlink(msg)
+            # self.vehicle.flush()
+            self.vehicle.mode = VehicleMode("AUTO")
+
+        self.vehicle.commands.download()
+        self.vehicle.commands.wait_ready()
+        if continue_mission: 
+            self.vehicle.commands.next = self.next_wp
+            time.sleep(1)
+
+        pickup = self.pickup_mission_index + 2 # +1 for 0-index, +1 for takeoff
+        dropoff = self.dropoff_mission_index + 2 
+        
+        if dropoff >= self.vehicle.commands.count: 
+            dropoff = self.vehicle.commands.count - 1
 
         def _execute_mission(): 
+            count = 0
             while True: 
-                if self.vehicle.commands.next in [self.pickup_mission_index, self.dropoff_mission_index]: 
+                if self.vehicle.commands.next in [2, 3]: 
+            # for i in range(1,3): 
+                    cmd = self.vehicle.commands[self.vehicle.commands.next-1]
+                    location = LocationGlobalRelative(cmd.x, cmd.y, cmd.z)
                     self.vehicle.mode = VehicleMode("GUIDED")
                     time.sleep(1)
                     self.vehicle.groundspeed = 0
                     time.sleep(1)
+                    self.vehicle.simple_goto(location)
+                    time.sleep(5)
                     #open servo to lower the payload containers
                     self.set_servo(5, 2000)
-                    time_start = time.time()
-                    #wait for 10 seconds
-                    while time.time() - time_start >= 20: 
-                        #for override commands
-                        if self.vehicle.mode != "GUIDED": return
-                        time.sleep(1)
-                    
+                    #wait for 20 seconds
+                    time.sleep(2)
                     self.set_servo(5, 1000)
-                    time_start = time.time()
-                    #wait for 10 seconds
-                    while time.time() - time_start >= 20: 
-                        #for override commands
-                        if self.vehicle.mode != "GUIDED": return
-                        time.sleep(1)
-                    #continues mission
+                    time.sleep(2)
+
+                    self.vehicle.mode = VehicleMode("AUTO")
+                    time.sleep(1)
+                    count += 1
+                    if count >= 2: 
+                        break
+                
+                if not self.mission_status == MissionStatus.IN_MISSION: 
                     break
-                    
+
                 time.sleep(1)
+                    
              
-        threading.Thread(target=_execute_mission, daemon=True).start()
+        # threading.Thread(target=_execute_mission, daemon=True).start()
 
 
 
     def check_flight_readiness(self):
         # severity, _ = self.get_mav_msg()
         # return 0 <= severity < 7
-        return Vehicle.is_armable
+        return self.vehicle.is_armable
 
     def check_in_mission(self):
-        return self.vehicle.armed and self.vehicle.mode.name in ["AUTO", "GUIDED"]
+        return self.vehicle.armed and self.vehicle.mode.name in ["AUTO", "GUIDED"] 
 
     def check_manual_override(self):
         return self.vehicle.armed and self.vehicle.mode.name in ["LOITER", "ALTHOLD", "STABILIZE", "MANUAL"]

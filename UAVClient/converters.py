@@ -44,7 +44,7 @@ class MissionConverter:
             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
             0, 0,
             0, 0, 0, 0,
-            0, 0, 0
+            0, 0, 40
         )
         commands.append(takeoff_cmd)
 
@@ -52,7 +52,7 @@ class MissionConverter:
             cmd = Command(
                 0, 0, 0, mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
                 mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 0, 0, 0, 0, 0,
-                wp['lat'], wp['lon'], wp['alt']
+                wp['lat'], wp['lon'], 40 
             )
             commands.append(cmd)
         
@@ -75,14 +75,14 @@ class MissionConverter:
         
         mission_json = {
             "commands": commands_arr,
-            "pickup_index": pickup_mission_index, 
-            "dropoff_index": dropoff_mission_index
+            "pickup_mission_index": pickup_mission_index, 
+            "dropoff_mission_index": dropoff_mission_index
         }
         return mission_json
 
 class LandingZoneConverter:
     @staticmethod
-    def to_json(location: LocationGlobal, id: int):
+    def to_json(location: LocationGlobal):
         return {
             "lat": location.lat,
             "lon": location.lon,
